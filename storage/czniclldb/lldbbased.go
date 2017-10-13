@@ -59,13 +59,13 @@ func compress(blob []byte) *bytebufferpool.ByteBuffer {
 	buf   := blobPool.Get()
 	buf.B  = expand(buf.B,i+4)
 	
-	j,e := lz4.CompressBlock(blob,buf.B[8:],0)
+	j,e := lz4.CompressBlock(blob,buf.B[4:],0)
 	if e!=nil || j==0 {
-		buf.B = buf.B[:8+lblob]
-		copy(buf.B[8:],blob)
+		buf.B = buf.B[:4+lblob]
+		copy(buf.B[4:],blob)
 		lblob = 0
 	} else {
-		buf.B = buf.B[:8+j]
+		buf.B = buf.B[:4+j]
 	}
 	binary.BigEndian.PutUint32(buf.B[ :4],uint32(lblob))
 	return buf
@@ -84,6 +84,7 @@ type header struct{
 
 type llstorage struct{
 	buf  bytes.Buffer
+	filr lldb.Filer
 	all  *lldb.Allocator
 	tree *lldb.BTree
 	mutx sync.RWMutex
@@ -99,6 +100,7 @@ func (s *llstorage) store(categ, bb []byte) (int64,error) {
 		h.Next  = int64(binary.BigEndian.Uint64(obj))
 		h.Flags = obj[8] & ^hasMore
 	}
+	
 	// Create the linked list backwards.
 	for i := len(rb) ; i>0 ; {
 		i--
@@ -106,6 +108,7 @@ func (s *llstorage) store(categ, bb []byte) (int64,error) {
 		binary.Write(&s.buf,binary.BigEndian,h)
 		s.buf.Write(rb[i])
 		handle,err := s.all.Alloc(s.buf.Bytes())
+		
 		if err!=nil { return 0,err }
 		h.Next = handle
 		h.Flags = hasNext|hasMore
@@ -114,6 +117,7 @@ func (s *llstorage) store(categ, bb []byte) (int64,error) {
 	binary.BigEndian.PutUint64(myBuf[:8],uint64(h.Next))
 	myBuf[8] = h.Flags
 	s.tree.Set(categ,myBuf[:])
+	
 	return h.Next,nil // Return the head of the list.
 }
 const dayTime = "20060102"
@@ -154,7 +158,10 @@ func (s *llstorage) Expire(t time.Time) {}
 func (s *llstorage) FreeStorage() int64 {
 	return 0
 }
-
+func (s *llstorage) size() (size int64) {
+	size,_ = s.filr.Size()
+	return
+}
 
 func init() {
 	storage.Backends["clldb"] = clldbLoader
@@ -167,10 +174,15 @@ func clldbLoader(path string, cfg *storage.StorageConfig) (string,istorage.Stora
 	if err!=nil { return "",nil,err }
 	fileLength,err := f.Seek(0,2)
 	if err!=nil { return "",nil,err }
-	all,err := lldb.NewAllocator(lldb.NewSimpleFileFiler(f),&lldb.Options{})
+	sf := lldb.NewSimpleFileFiler(f)
+	fmt.Println(fileLength)
+	all,err := lldb.NewAllocator(sf,&lldb.Options{})
+	fmt.Println(sf.Size())
 	if err!=nil { return "",nil,err }
 	
+	
 	s := new(llstorage)
+	s.filr = sf
 	s.all  = all
 	if fileLength==0 {
 		bt,h,err := lldb.CreateBTree(s.all,bytes.Compare)
@@ -182,6 +194,7 @@ func clldbLoader(path string, cfg *storage.StorageConfig) (string,istorage.Stora
 		if err!=nil { return "",nil,err }
 		s.tree = bt
 	}
+	fmt.Println(sf.Size())
 	
 	//d.maxSpace   = cfg.Capacity.Int64()
 	
